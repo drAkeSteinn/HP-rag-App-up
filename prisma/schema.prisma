@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Collection {
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  chatModel   String        @default("llama3.2")
+  embedModel  String        @default("nomic-embed-text")
+  webSearch   Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  documents   Document[]
+  messages    ChatMessage[]
+  embeddings  Embedding[]
+  chunks      Chunk[]
+}
+
+model Document {
+  id           String     @id @default(cuid())
+  name         String
+  type         String     @default("text")
+  content      String
+  chunkCount   Int        @default(0)
+  embedded     Boolean    @default(false)
+  collectionId String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  chunks       Chunk[]
+}
+
+model Chunk {
+  id           String     @id @default(cuid())
+  content      String
+  index        Int
+  documentId   String
+  collectionId String
+  document     Document   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  embedding    Embedding?
+}
+
+model Embedding {
+  id           String     @id @default(cuid())
+  vector       String     // JSON array of floats
+  chunkId      String     @unique
+  collectionId String
+  chunk        Chunk      @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+}
+
+model ChatMessage {
+  id           String     @id @default(cuid())
+  role         String     // "user" or "assistant"
+  content      String
+  thinking     String?    // Reasoning content from models like Qwen 3, DeepSeek-R1
+  sources      String?    // JSON: web search sources used for this response
+  collectionId String
+  createdAt    DateTime   @default(now())
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+}
+
+model AppSetting {
+  key       String @id
+  value     String // JSON string for complex values
+  updatedAt DateTime @updatedAt
+}

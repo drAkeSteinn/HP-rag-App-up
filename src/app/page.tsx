@@ -1,0 +1,1776 @@
+'use client';
+
+import { useEffect, useCallback, useRef, useState } from 'react';
+import { useAppStore, type Collection, type ChatMessage, type OllamaModel } from '@/stores/app-store';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from '@/components/ui/dialog';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import {
+  MessageSquare,
+  Plus,
+  FolderOpen,
+  Trash2,
+  Settings,
+  FileText,
+  Upload,
+  Send,
+  Bot,
+  User,
+  Wifi,
+  WifiOff,
+  PanelLeftClose,
+  PanelLeft,
+  Loader2,
+  Database,
+  X,
+  Check,
+  File,
+  Copy,
+  Sparkles,
+  Globe,
+  ExternalLink,
+  Mic,
+  MicOff,
+} from 'lucide-react';
+import { useVoiceRecognition } from '@/hooks/useVoiceRecognition';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+// Code block component with syntax highlighting and copy button
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback
+      const textarea = document.createElement('textarea');
+      textarea.value = code;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="relative group my-2 rounded-lg overflow-hidden border border-gray-200">
+      {/* Header bar with language label + copy button */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-100 border-b border-gray-200 text-xs text-gray-500">
+        <span className="font-medium">{language}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-gray-200 transition-colors text-gray-400 hover:text-gray-600"
+          title="Copiar código"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3.5 h-3.5 text-green-500" />
+              <span className="text-green-500">Copiado</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3.5 h-3.5" />
+              <span>Copiar</span>
+            </>
+          )}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        language={language}
+        style={oneLight}
+        customStyle={{
+          margin: 0,
+          padding: '0.75rem 1rem',
+          fontSize: '0.8125rem',
+          background: '#fafafa',
+          borderRadius: 0,
+        }}
+        showLineNumbers={code.split('\n').length > 3}
+        lineNumberStyle={{ color: '#c0c0c0', fontSize: '0.75rem' }}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+}
+
+export default function Home() {
+  const {
+    collections,
+    selectedCollectionId,
+    messages,
+    isChatLoading,
+    documents,
+    chatModels,
+    embeddingModels,
+    ollamaConnected,
+    sidebarOpen,
+    documentsPanelOpen,
+    settingsPanelOpen,
+    setCollections,
+    selectCollection,
+    setMessages,
+    addMessage,
+    setIsChatLoading,
+    setDocuments,
+    setChatModels,
+    setEmbeddingModels,
+    setOllamaConnected,
+    setSidebarOpen,
+    setDocumentsPanelOpen,
+    setSettingsPanelOpen,
+  } = useAppStore();
+
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [newCollectionDesc, setNewCollectionDesc] = useState('');
+  const [newCollectionChatModel, setNewCollectionChatModel] = useState('');
+  const [newCollectionEmbedModel, setNewCollectionEmbedModel] = useState('');
+  const [chatInput, setChatInput] = useState('');
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const [embeddingDocs, setEmbeddingDocs] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [pasteName, setPasteName] = useState('');
+  const [showPasteDialog, setShowPasteDialog] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  // Track which assistant message is currently streaming (has thinking but no content yet)
+  const streamingAssistantId = useRef<string | null>(null);
+  const [webSearchProvider, setWebSearchProvider] = useState<'zai' | 'duckduckgo' | 'searxng'>('duckduckgo');
+  const [searxngUrl, setSearxngUrl] = useState('http://localhost:8080');
+  const [testingSearch, setTestingSearch] = useState(false);
+  const [searchTestResult, setSearchTestResult] = useState<{ok: boolean; error?: string} | null>(null);
+  const [voiceKeyword, setVoiceKeyword] = useState('asistente HP');
+  const [voicePauseDuration, setVoicePauseDuration] = useState(1.5);
+  const [voiceLanguage, setVoiceLanguage] = useState('es-ES');
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+
+  const selectedCollection = collections.find(c => c.id === selectedCollectionId);
+
+  // Fetch initial data
+  const fetchCollections = useCallback(async () => {
+    try {
+      const res = await fetch('/api/collections');
+      const data = await res.json();
+      setCollections(data.collections || []);
+    } catch (err) {
+      console.error('Failed to fetch collections:', err);
+    }
+  }, [setCollections]);
+
+  const fetchModels = useCallback(async () => {
+    try {
+      const [chatRes, embedRes, statusRes] = await Promise.all([
+        fetch('/api/ollama/models'),
+        fetch('/api/ollama/embedding-models'),
+        fetch('/api/ollama/status'),
+      ]);
+      const chatData = await chatRes.json();
+      const embedData = await embedRes.json();
+      const statusData = await statusRes.json();
+      setChatModels(chatData.models || []);
+      setEmbeddingModels(embedData.models || []);
+      setOllamaConnected(statusData.connected || false);
+    } catch (err) {
+      console.error('Failed to fetch models:', err);
+      setOllamaConnected(false);
+    }
+  }, [setChatModels, setEmbeddingModels, setOllamaConnected]);
+
+  const fetchMessages = useCallback(async (collectionId: string) => {
+    try {
+      const res = await fetch(`/api/collections/${collectionId}/chat`);
+      const data = await res.json();
+      const msgs = Array.isArray(data.messages) ? data.messages : [];
+      setMessages(msgs);
+    } catch (err) {
+      console.error('Failed to fetch messages:', err);
+      setMessages([]);
+    }
+  }, [setMessages]);
+
+  const fetchDocuments = useCallback(async (collectionId: string) => {
+    try {
+      const res = await fetch(`/api/collections/${collectionId}/documents`);
+      const data = await res.json();
+      setDocuments(data.documents || []);
+    } catch (err) {
+      console.error('Failed to fetch documents:', err);
+    }
+  }, [setDocuments]);
+
+  // Fetch web search settings
+  const fetchWebSearchSettings = useCallback(async () => {
+    try {
+      const res = await fetch('/api/settings/web-search');
+      const data = await res.json();
+      if (data.config) {
+        setWebSearchProvider(data.config.provider || 'duckduckgo');
+        setSearxngUrl(data.config.searxngUrl || 'http://localhost:8080');
+      }
+    } catch (err) {
+      console.error('Failed to fetch web search settings:', err);
+    }
+  }, []);
+
+  // Fetch voice settings
+  const fetchVoiceSettings = useCallback(async () => {
+    try {
+      const res = await fetch('/api/settings/voice');
+      const data = await res.json();
+      if (data.config) {
+        setVoiceKeyword(data.config.keyword || 'asistente HP');
+        setVoicePauseDuration(data.config.pauseDuration || 1.5);
+        setVoiceLanguage(data.config.language || 'es-ES');
+        setVoiceEnabled(data.config.enabled || false);
+      }
+    } catch (err) {
+      console.error('Failed to fetch voice settings:', err);
+    }
+  }, []);
+
+  // Ref for sending voice messages directly (initialized after handleSendMessage is defined)
+  const sendMessageRef = useRef<((text?: string) => Promise<void>) | null>(null);
+
+  const handleVoiceMessage = useCallback((text: string) => {
+    sendMessageRef.current?.(text);
+  }, []);
+
+  const { state: voiceState, transcript: voiceTranscript, lastSentTranscript, startListening, stopListening, supported: voiceSupported } = useVoiceRecognition({
+    keyword: voiceKeyword,
+    pauseDuration: voicePauseDuration,
+    language: voiceLanguage,
+    enabled: voiceActive,
+    onMessage: handleVoiceMessage,
+  });
+
+  useEffect(() => {
+    fetchCollections();
+    fetchModels();
+    fetchWebSearchSettings();
+    fetchVoiceSettings();
+  }, [fetchCollections, fetchModels, fetchWebSearchSettings, fetchVoiceSettings]);
+
+  useEffect(() => {
+    if (selectedCollectionId) {
+      fetchMessages(selectedCollectionId);
+      fetchDocuments(selectedCollectionId);
+    }
+  }, [selectedCollectionId, fetchMessages, fetchDocuments]);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Create collection
+  const handleCreateCollection = async () => {
+    if (!newCollectionName.trim()) return;
+    try {
+      const res = await fetch('/api/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newCollectionName.trim(),
+          description: newCollectionDesc.trim() || undefined,
+          chatModel: newCollectionChatModel || undefined,
+          embedModel: newCollectionEmbedModel || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.collection) {
+        setNewCollectionName('');
+        setNewCollectionDesc('');
+        setNewCollectionChatModel('');
+        setNewCollectionEmbedModel('');
+        setCreateDialogOpen(false);
+        await fetchCollections();
+        selectCollection(data.collection.id);
+      }
+    } catch (err) {
+      console.error('Failed to create collection:', err);
+    }
+  };
+
+  // Delete collection
+  const handleDeleteCollection = async (id: string) => {
+    try {
+      await fetch(`/api/collections/${id}`, { method: 'DELETE' });
+      if (selectedCollectionId === id) {
+        selectCollection(null);
+      }
+      await fetchCollections();
+    } catch (err) {
+      console.error('Failed to delete collection:', err);
+    }
+  };
+
+  // Select collection
+  const handleSelectCollection = (id: string) => {
+    selectCollection(id);
+    setDocumentsPanelOpen(false);
+    setSettingsPanelOpen(false);
+  };
+
+  // Upload document
+  const handleUploadDocument = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedCollectionId) return;
+
+    setUploadingDoc(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`/api/collections/${selectedCollectionId}/documents`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.document) {
+        await fetchDocuments(selectedCollectionId);
+        await fetchCollections();
+      }
+    } catch (err) {
+      console.error('Failed to upload document:', err);
+    } finally {
+      setUploadingDoc(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // Paste text as document
+  const handlePasteDocument = async () => {
+    if (!pasteText.trim() || !selectedCollectionId) return;
+    setUploadingDoc(true);
+    try {
+      const formData = new FormData();
+      formData.append('text', pasteText);
+      formData.append('name', pasteName.trim() || 'Pasted Text');
+      const res = await fetch(`/api/collections/${selectedCollectionId}/documents`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.document) {
+        await fetchDocuments(selectedCollectionId);
+        await fetchCollections();
+        setPasteText('');
+        setPasteName('');
+        setShowPasteDialog(false);
+      }
+    } catch (err) {
+      console.error('Failed to paste document:', err);
+    } finally {
+      setUploadingDoc(false);
+    }
+  };
+
+  // Generate embeddings
+  const handleGenerateEmbeddings = async () => {
+    if (!selectedCollectionId) return;
+    setEmbeddingDocs(true);
+    try {
+      const res = await fetch(`/api/collections/${selectedCollectionId}/embed`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      await fetchDocuments(selectedCollectionId);
+      console.log('Embedding result:', data.message);
+    } catch (err) {
+      console.error('Failed to generate embeddings:', err);
+    } finally {
+      setEmbeddingDocs(false);
+    }
+  };
+
+  // Send chat message
+  const handleSendMessage = async (overrideText?: string) => {
+    const text = (overrideText || chatInput).trim();
+    if (!text || !selectedCollectionId || isChatLoading) return;
+
+    const userMessage = text;
+    setChatInput('');
+    addMessage({
+      id: 'temp-' + Date.now(),
+      role: 'user',
+      content: userMessage,
+      collectionId: selectedCollectionId,
+      createdAt: new Date().toISOString(),
+    });
+    setIsChatLoading(true);
+
+    try {
+      const res = await fetch(`/api/collections/${selectedCollectionId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage, enableWebSearch: webSearchEnabled }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Chat request failed');
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No reader available');
+
+      const decoder = new TextDecoder();
+      let assistantContent = '';
+      let assistantThinking = '';
+      const assistantId = 'temp-assistant-' + Date.now();
+      streamingAssistantId.current = assistantId;
+
+      addMessage({
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        thinking: '',
+        collectionId: selectedCollectionId,
+        createdAt: new Date().toISOString(),
+      });
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text = decoder.decode(value, { stream: true });
+        const lines = text.split('\n').filter(l => l.trim());
+
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            // Capture thinking/reasoning
+            if (parsed.thinking) {
+              assistantThinking += parsed.thinking;
+              setMessages(prev => {
+                const arr = Array.isArray(prev) ? prev : [];
+                return arr.map(m =>
+                  m.id === assistantId
+                    ? { ...m, thinking: assistantThinking }
+                    : m
+                );
+              });
+            }
+            // Capture content
+            if (parsed.content) {
+              assistantContent += parsed.content;
+              setMessages(prev => {
+                const arr = Array.isArray(prev) ? prev : [];
+                return arr.map(m =>
+                  m.id === assistantId
+                    ? { ...m, content: assistantContent }
+                    : m
+                );
+              });
+            }
+          } catch {
+            // skip
+          }
+        }
+      }
+
+      // Refresh messages from DB to get proper IDs
+      await fetchMessages(selectedCollectionId);
+    } catch (err) {
+      console.error('Chat error:', err);
+      addMessage({
+        id: 'error-' + Date.now(),
+        role: 'assistant',
+        content: 'Error: Failed to get response. Please check that Ollama is running and the model is available.',
+        collectionId: selectedCollectionId,
+        createdAt: new Date().toISOString(),
+      });
+    } finally {
+      setIsChatLoading(false);
+      streamingAssistantId.current = null;
+    }
+  };
+
+  // Keep ref in sync with latest handleSendMessage
+  useEffect(() => {
+    sendMessageRef.current = handleSendMessage;
+  }, [handleSendMessage]);
+
+  // Handle Enter key in chat
+  const handleChatKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  // Update collection model
+  const handleUpdateModel = async (field: 'chatModel' | 'embedModel', value: string) => {
+    if (!selectedCollectionId) return;
+    try {
+      await fetch(`/api/collections/${selectedCollectionId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value }),
+      });
+      await fetchCollections();
+    } catch (err) {
+      console.error('Failed to update model:', err);
+    }
+  };
+
+  // Delete document
+  const handleDeleteDocument = async (docId: string) => {
+    if (!selectedCollectionId) return;
+    try {
+      await fetch(`/api/collections/${selectedCollectionId}/documents?docId=${docId}`, {
+        method: 'DELETE',
+      });
+      await fetchDocuments(selectedCollectionId);
+      await fetchCollections();
+    } catch (err) {
+      console.error('Failed to delete document:', err);
+    }
+  };
+
+  return (
+    <div className="h-screen flex bg-white">
+      {/* Sidebar */}
+      <div
+        className={`${
+          sidebarOpen ? 'w-[300px]' : 'w-0'
+        } transition-all duration-300 overflow-hidden border-r border-gray-100 flex flex-col bg-white`}
+      >
+        {/* Sidebar Header */}
+        <div className="p-4 border-b border-gray-100 flex-shrink-0">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-8 h-8 rounded-lg bg-[#024ad8] flex items-center justify-center">
+              <Bot className="w-5 h-5 text-white" />
+            </div>
+            <h1 className="text-lg font-bold text-gray-900">HP Chat</h1>
+          </div>
+
+          {/* Ollama Status */}
+          <div className="flex items-center gap-2 text-sm mb-3">
+            {ollamaConnected ? (
+              <>
+                <Wifi className="w-4 h-4 text-green-500" />
+                <span className="text-green-600 font-medium">Ollama conectado</span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-4 h-4 text-red-400" />
+                <span className="text-red-500 font-medium">Ollama desconectado</span>
+              </>
+            )}
+          </div>
+
+          {/* New Collection Button */}
+          <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+            <DialogTrigger asChild>
+              <Button className="w-full bg-[#024ad8] hover:bg-[#0139a3] text-white">
+                <Plus className="w-4 h-4 mr-2" />
+                Nueva Colección
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Crear Nueva Colección</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label>Nombre *</Label>
+                  <Input
+                    placeholder="Nombre de la colección"
+                    value={newCollectionName}
+                    onChange={(e) => setNewCollectionName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleCreateCollection()}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Descripción</Label>
+                  <Input
+                    placeholder="Descripción opcional"
+                    value={newCollectionDesc}
+                    onChange={(e) => setNewCollectionDesc(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Modelo de Chat</Label>
+                  <Select value={newCollectionChatModel} onValueChange={setNewCollectionChatModel}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar modelo" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {chatModels.map((model) => (
+                        <SelectItem key={model.name} value={model.name}>
+                          {model.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Modelo de Embeddings</Label>
+                  <Select value={newCollectionEmbedModel} onValueChange={setNewCollectionEmbedModel}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar modelo" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {embeddingModels.map((model) => (
+                        <SelectItem key={model.name} value={model.name}>
+                          {model.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button variant="outline">Cancelar</Button>
+                </DialogClose>
+                <Button
+                  className="bg-[#024ad8] hover:bg-[#0139a3] text-white"
+                  onClick={handleCreateCollection}
+                  disabled={!newCollectionName.trim()}
+                >
+                  Crear
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        {/* Collections List */}
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+          <div className="p-2">
+            {collections.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <FolderOpen className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                <p className="text-sm">No hay colecciones</p>
+                <p className="text-xs mt-1">Crea una para comenzar</p>
+              </div>
+            ) : (
+              collections.map((collection) => (
+                <div
+                  key={collection.id}
+                  className={`group flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer mb-1 transition-all ${
+                    selectedCollectionId === collection.id
+                      ? 'bg-[#024ad8]/10 text-[#024ad8] border border-[#024ad8]/20'
+                      : 'hover:bg-gray-100 text-gray-700'
+                  }`}
+                  onClick={() => handleSelectCollection(collection.id)}
+                >
+                  <FolderOpen className={`w-4 h-4 flex-shrink-0 ${
+                    selectedCollectionId === collection.id ? 'text-[#024ad8]' : 'text-gray-400'
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{collection.name}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {collection._count && (
+                        <span className="text-xs text-gray-400">
+                          {collection._count.documents} docs · {collection._count.messages} msgs
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="w-7 h-7 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Eliminar colección</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          ¿Estás seguro de que quieres eliminar &quot;{collection.name}&quot;? Esta acción no se puede deshacer y se eliminarán todos los documentos y mensajes.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          className="bg-red-500 hover:bg-red-600 text-white"
+                          onClick={() => handleDeleteCollection(collection.id)}
+                        >
+                          Eliminar
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Sidebar Footer - Model info */}
+        {selectedCollection && (
+          <div className="p-3 border-t border-gray-100 bg-gray-50/80 flex-shrink-0">
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span className="truncate">{selectedCollection.chatModel}</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="w-6 h-6"
+                onClick={() => setSettingsPanelOpen(!settingsPanelOpen)}
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0 h-screen">
+        {/* Top Bar with 3 icons */}
+        <div className="h-12 flex items-center justify-between px-4 bg-white flex-shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="w-9 h-9 text-gray-500 hover:text-[#024ad8]"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >
+            {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
+          </Button>
+
+          {selectedCollection ? (
+            <div className="flex items-center gap-1">
+              <Button
+                variant={documentsPanelOpen ? 'secondary' : 'ghost'}
+                size="icon"
+                className={`w-9 h-9 ${documentsPanelOpen ? 'text-[#024ad8]' : 'text-gray-500 hover:text-[#024ad8]'}`}
+                onClick={() => {
+                  setDocumentsPanelOpen(!documentsPanelOpen);
+                  setSettingsPanelOpen(false);
+                }}
+              >
+                <FileText className="w-4 h-4" />
+              </Button>
+              <Button
+                variant={settingsPanelOpen ? 'secondary' : 'ghost'}
+                size="icon"
+                className={`w-9 h-9 ${settingsPanelOpen ? 'text-[#024ad8]' : 'text-gray-500 hover:text-[#024ad8]'}`}
+                onClick={() => {
+                  setSettingsPanelOpen(!settingsPanelOpen);
+                  setDocumentsPanelOpen(false);
+                }}
+              >
+                <Settings className="w-4 h-4" />
+              </Button>
+            </div>
+          ) : (
+            <div />
+          )}
+        </div>
+
+        {/* HP Banner Header - always visible, never scrolls */}
+        <div className="w-full flex-shrink-0 flex justify-center border-b border-gray-100/50">
+          <img
+            src="/banner2.png"
+            alt="Pregúntale a la IA con HP"
+            className="h-auto"
+          />
+        </div>
+
+        <div className="flex-1 flex min-h-0">
+          {/* Chat Area */}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0">
+            {selectedCollectionId ? (
+              <>
+                {/* Messages - ONLY scrollable region */}
+                <ScrollArea className="flex-1 min-h-0 p-4">
+                  <div className="max-w-3xl mx-auto space-y-4">
+                    {messages.length === 0 && (
+                      <div className="text-center py-16">
+                        <div className="w-16 h-16 rounded-2xl bg-[#024ad8]/10 flex items-center justify-center mx-auto mb-4">
+                          <Sparkles className="w-8 h-8 text-[#024ad8]" />
+                        </div>
+                        <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                          Hola soy tu asistente HP potenciado con Inteligencia artificial
+                        </h3>
+                        <p className="text-sm text-gray-500 max-w-md mx-auto">
+                          Agrega documentos a esta colección y hazme preguntas basadas en tu información.
+                        </p>
+                        {documents.length > 0 && documents.some(d => d.embedded) && (
+                          <Badge className="mt-3 bg-green-100 text-green-700 hover:bg-green-100">
+                            <Check className="w-3 h-3 mr-1" />
+                            Embeddings generados
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+                    {Array.isArray(messages) && messages.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      >
+                        {msg.role === 'assistant' && (
+                          <div className="w-8 h-8 rounded-lg bg-[#024ad8] flex items-center justify-center flex-shrink-0 mt-1">
+                            <Bot className="w-4 h-4 text-white" />
+                          </div>
+                        )}
+                        <div
+                          className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                            msg.role === 'user'
+                              ? 'bg-[#024ad8] text-white'
+                              : 'bg-gray-100 text-gray-900'
+                          }`}
+                        >
+                          {/* Thinking block for reasoning models - ChatGPT/Grok style */}
+                          {msg.role === 'assistant' && msg.thinking && (
+                            <div className="mb-2">
+                              {/* While actively reasoning (streaming thinking, no content yet) - show live reasoning */}
+                              {isChatLoading && streamingAssistantId.current === msg.id && !msg.content ? (
+                                <div>
+                                  <div className="flex items-center gap-2 text-xs text-gray-400 mb-1.5">
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <span>Razonando...</span>
+                                  </div>
+                                  <div className="p-2.5 rounded-lg bg-gray-50/80 border border-gray-100 text-xs text-gray-500 whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar">
+                                    {msg.thinking}
+                                  </div>
+                                </div>
+                              ) : (
+                                /* After reasoning - show collapsed "Razonamiento" that can expand */
+                                <details className="group">
+                                  <summary className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer hover:text-gray-500 select-none list-none">
+                                    <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                    </svg>
+                                    <span>Razonamiento</span>
+                                  </summary>
+                                  <div className="mt-1.5 p-2.5 rounded-lg bg-gray-50 border border-gray-100 text-xs text-gray-500 whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar">
+                                    {msg.thinking}
+                                  </div>
+                                </details>
+                              )}
+                            </div>
+                          )}
+
+                          <div className={`chat-message text-sm leading-relaxed ${
+                            msg.role === 'user' ? 'text-white' : ''
+                          }`}>
+                            {msg.role === 'assistant' ? (
+                              msg.content ? (
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  rehypePlugins={[rehypeRaw]}
+                                  components={{
+                                    code({ className, children, ...props }) {
+                                      const match = /language-(\w+)/.exec(className || '');
+                                      const codeStr = String(children).replace(/\n$/, '');
+                                      if (match) {
+                                        return <CodeBlock language={match[1]} code={codeStr} />;
+                                      }
+                                      return <code className={className} {...props}>{children}</code>;
+                                    },
+                                  }}
+                                >{msg.content}</ReactMarkdown>
+                              ) : !msg.thinking ? (
+                                /* Non-reasoning model loading state */
+                                <div className="flex items-center gap-2">
+                                  <Loader2 className="w-4 h-4 animate-spin text-[#024ad8]" />
+                                  <span className="text-sm text-gray-500">Pensando...</span>
+                                </div>
+                              ) : null
+                            ) : (
+                              <p className="whitespace-pre-wrap">{msg.content}</p>
+                            )}
+                          </div>
+
+                          {/* Sources: RAG references + Web sources */}
+                          {msg.role === 'assistant' && msg.sources && (() => {
+                            try {
+                              const sources = JSON.parse(msg.sources);
+                              const ragRefs = sources.rag as { id: string; content: string; documentName: string; similarity: number }[] | undefined;
+                              const webRefs = sources.web as { name: string; url: string }[] | undefined;
+                              // Also handle legacy format (array of web sources)
+                              const legacyWeb = Array.isArray(sources) ? sources : null;
+                              const hasRag = ragRefs && ragRefs.length > 0;
+                              const hasWeb = (webRefs && webRefs.length > 0) || (legacyWeb && legacyWeb.length > 0);
+                              if (!hasRag && !hasWeb) return null;
+                              return (
+                                <div className="mt-2 pt-2 border-t border-gray-200/60">
+                                  {/* RAG References */}
+                                  {hasRag && (
+                                    <div className="mb-1.5">
+                                      <p className="text-xs text-gray-400 mb-1 flex items-center gap-1">
+                                        <Database className="w-3 h-3" />
+                                        Referencias
+                                      </p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {ragRefs!.map((ref, i) => (
+                                          <span key={ref.id} className="group relative">
+                                            <span className="inline-flex items-center gap-0.5 text-xs bg-[#024ad8]/10 text-[#024ad8] rounded px-1.5 py-0.5 cursor-pointer hover:bg-[#024ad8]/20 transition-colors">
+                                              <FileText className="w-2.5 h-2.5" />
+                                              ref{i + 1}
+                                            </span>
+                                            {/* Tooltip */}
+                                            <span className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-72 p-2.5 rounded-lg bg-white text-black border border-dashed border-[#024ad8] text-xs shadow-md whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar">
+                                              <span className="font-semibold text-[#024ad8] block mb-1">{ref.documentName}</span>
+                                              {ref.content}
+                                            </span>
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {/* Web Sources */}
+                                  {hasWeb && (
+                                    <div>
+                                      <p className="text-xs text-gray-400 mb-1 flex items-center gap-1">
+                                        <Globe className="w-3 h-3" />
+                                        Fuentes web
+                                      </p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {(webRefs || legacyWeb)!.map((s: { name: string; url: string }, i: number) => (
+                                          <a
+                                            key={i}
+                                            href={s.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-xs text-[#024ad8] hover:underline flex items-center gap-0.5 bg-blue-50 rounded px-1.5 py-0.5"
+                                          >
+                                            {s.name.substring(0, 30)}
+                                            <ExternalLink className="w-2.5 h-2.5" />
+                                          </a>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            } catch { /* skip */ }
+                            return null;
+                          })()}
+                        </div>
+                        {msg.role === 'user' && (
+                          <div className="w-8 h-8 rounded-lg bg-gray-200 flex items-center justify-center flex-shrink-0 mt-1">
+                            <User className="w-4 h-4 text-gray-600" />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {/* Show loading only when no assistant message exists yet (edge case) */}
+                    {isChatLoading && Array.isArray(messages) && messages.length > 0 && messages[messages.length - 1]?.role === 'user' && (
+                      <div className="flex gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-[#024ad8] flex items-center justify-center flex-shrink-0 mt-1">
+                          <Bot className="w-4 h-4 text-white" />
+                        </div>
+                        <div className="bg-gray-100 rounded-2xl px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin text-[#024ad8]" />
+                            <span className="text-sm text-gray-500">Pensando...</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+                </ScrollArea>
+
+                {/* Voice Marquee - Real-time transcription display */}
+                {voiceActive && (
+                  <div className="flex-shrink-0">
+                    {/* Listening State - Blue themed with scrolling marquee */}
+                    {voiceState === 'listening' && (
+                      <div className="bg-gradient-to-r from-[#024ad8]/5 via-[#024ad8]/8 to-[#024ad8]/5 border-t border-[#024ad8]/15 px-4 py-2.5 flex items-center gap-3 overflow-hidden">
+                        {/* Sound wave bars */}
+                        <div className="flex items-center gap-[3px] h-5 flex-shrink-0">
+                          <div className="w-[3px] bg-[#024ad8]/50 rounded-full voice-sound-bar" style={{ height: 4 }} />
+                          <div className="w-[3px] bg-[#024ad8]/50 rounded-full voice-sound-bar" style={{ height: 4 }} />
+                          <div className="w-[3px] bg-[#024ad8]/50 rounded-full voice-sound-bar" style={{ height: 4 }} />
+                          <div className="w-[3px] bg-[#024ad8]/50 rounded-full voice-sound-bar" style={{ height: 4 }} />
+                          <div className="w-[3px] bg-[#024ad8]/50 rounded-full voice-sound-bar" style={{ height: 4 }} />
+                        </div>
+                        {/* Scrolling marquee text */}
+                        <div className="flex-1 overflow-hidden relative min-w-0">
+                          <div className="voice-marquee-scroll whitespace-nowrap inline-flex">
+                            <span className="text-sm text-[#024ad8] font-medium pr-8">
+                              Escuchando... di &quot;{voiceKeyword}&quot; para activar ✦
+                            </span>
+                            <span className="text-sm text-[#024ad8]/60 font-medium pr-8">
+                              Escuchando... di &quot;{voiceKeyword}&quot; para activar ✦
+                            </span>
+                          </div>
+                        </div>
+                        {/* LIVE badge */}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <div className="w-1.5 h-1.5 rounded-full bg-[#024ad8] animate-pulse" />
+                          <span className="text-[10px] font-bold text-[#024ad8]/70 tracking-wider uppercase">LIVE</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Keyword Detected State - Amber flash */}
+                    {voiceState === 'keyword-detected' && (
+                      <div className="bg-gradient-to-r from-amber-50 via-amber-100/80 to-amber-50 border-t border-amber-200 px-4 py-2.5 flex items-center gap-3 voice-keyword-glow">
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <Mic className="w-4 h-4 text-amber-600" />
+                          <div className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-amber-700">
+                            ¡&quot;{voiceKeyword}&quot; detectado! Habla ahora...
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Recording State - Green themed with live transcription */}
+                    {voiceState === 'recording' && (
+                      <div className="bg-gradient-to-r from-green-50/80 via-emerald-50/60 to-green-50/80 border-t border-green-200/60 px-4 py-2.5 flex items-center gap-3 overflow-hidden">
+                        {/* Recording dot + sound bars */}
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <div className="w-2.5 h-2.5 rounded-full bg-red-500 voice-rec-dot" />
+                          <div className="flex items-center gap-[3px] h-5">
+                            <div className="w-[3px] bg-green-500/60 rounded-full voice-sound-bar-green" style={{ height: 4 }} />
+                            <div className="w-[3px] bg-green-500/60 rounded-full voice-sound-bar-green" style={{ height: 4 }} />
+                            <div className="w-[3px] bg-green-500/60 rounded-full voice-sound-bar-green" style={{ height: 4 }} />
+                            <div className="w-[3px] bg-green-500/60 rounded-full voice-sound-bar-green" style={{ height: 4 }} />
+                            <div className="w-[3px] bg-green-500/60 rounded-full voice-sound-bar-green" style={{ height: 4 }} />
+                          </div>
+                        </div>
+                        {/* Live transcription text with blinking cursor */}
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          {voiceTranscript ? (
+                            <p className="text-sm text-green-700 font-medium truncate">
+                              {voiceTranscript}
+                              <span className="voice-blink-cursor text-green-500 ml-0.5">|</span>
+                            </p>
+                          ) : (
+                            <p className="text-sm text-green-500/70 italic">
+                              Habla ahora...<span className="voice-blink-cursor text-green-400 ml-0.5">|</span>
+                            </p>
+                          )}
+                        </div>
+                        {/* Pause indicator */}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                          <span className="text-[10px] font-medium text-green-500/70 tracking-wider uppercase">REC</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Last sent transcript - shown below marquee when available */}
+                    {lastSentTranscript && voiceState === 'listening' && (
+                      <div className="bg-gray-50/60 border-t border-gray-100/50 px-4 py-1.5 flex items-center gap-2">
+                        <Send className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                        <p className="text-xs text-gray-400 truncate">
+                          Último: {lastSentTranscript}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Chat Input - pinned to bottom */}
+                <div className="border-t border-gray-100 p-4 bg-white flex-shrink-0">
+                  <div className="max-w-3xl mx-auto">
+                    <div className="flex gap-2 items-end">
+                      <div className="flex-1 relative">
+                        <Textarea
+                          ref={chatInputRef}
+                          placeholder={
+                            ollamaConnected
+                              ? 'Escribe tu mensaje...'
+                              : 'Ollama no está conectado...'
+                          }
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyDown={handleChatKeyDown}
+                          disabled={isChatLoading || !ollamaConnected}
+                          className="min-h-[44px] max-h-32 resize-none pr-10 rounded-xl border-gray-100 focus:border-[#024ad8] focus:ring-[#024ad8]/20"
+                          rows={1}
+                        />
+                      </div>
+                      <Button
+                        onClick={() => {
+                          if (voiceActive) {
+                            stopListening();
+                            setVoiceActive(false);
+                          } else {
+                            startListening();
+                            setVoiceActive(true);
+                          }
+                        }}
+                        disabled={!voiceSupported || isChatLoading}
+                        className={`h-11 w-11 rounded-xl transition-all duration-300 ${
+                          voiceActive
+                            ? voiceState === 'recording'
+                              ? 'bg-green-500 hover:bg-green-600 text-white ring-2 ring-green-200'
+                              : voiceState === 'keyword-detected'
+                                ? 'bg-amber-500 hover:bg-amber-600 text-white ring-2 ring-amber-200'
+                                : 'bg-red-500 hover:bg-red-600 text-white ring-2 ring-red-200'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                        }`}
+                        size="icon"
+                        title={voiceSupported ? (voiceActive ? 'Detener escucha' : 'Activar escucha de voz') : 'Reconocimiento de voz no soportado'}
+                      >
+                        {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                      </Button>
+                      <Button
+                        onClick={handleSendMessage}
+                        disabled={!chatInput.trim() || isChatLoading || !ollamaConnected}
+                        className="bg-[#024ad8] hover:bg-[#0139a3] text-white h-11 w-11 rounded-xl"
+                        size="icon"
+                      >
+                        {isChatLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Send className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                      <Badge variant="outline" className="text-xs text-gray-400">
+                        {selectedCollection?.chatModel}
+                      </Badge>
+                      {documents.some(d => d.embedded) && (
+                        <Badge variant="outline" className="text-xs text-green-500 border-green-200">
+                          <Database className="w-3 h-3 mr-1" />
+                          RAG activo
+                        </Badge>
+                      )}
+                      <button
+                        onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                        className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs transition-colors ${
+                          webSearchEnabled
+                            ? 'border-[#024ad8]/30 bg-[#024ad8]/10 text-[#024ad8]'
+                            : 'border-gray-200 text-gray-400 hover:text-gray-500'
+                        }`}
+                      >
+                        <Globe className="w-3 h-3" />
+                        Web
+                      </button>
+                      {voiceActive && (
+                        <Badge variant="outline" className={`text-xs ${
+                          voiceState === 'recording'
+                            ? 'text-green-600 border-green-300 bg-green-50'
+                            : voiceState === 'keyword-detected'
+                              ? 'text-amber-600 border-amber-300 bg-amber-50'
+                              : 'text-[#024ad8] border-[#024ad8]/30 bg-[#024ad8]/5'
+                        }`}>
+                          <Mic className="w-3 h-3 mr-1" />
+                          {voiceState === 'recording' ? 'Grabando' : voiceState === 'keyword-detected' ? '¡Detectado!' : 'Voz activa'}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* Welcome Screen */
+              <div className="flex-1 flex items-center justify-center p-8">
+                <div className="text-center max-w-md">
+                  <p className="text-gray-500 mb-6">
+                    Chatea con tus documentos de manera local y segura. Crea una colección, agrega documentos y haz preguntas sobre ese tema.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+                    <div className="p-4 rounded-xl bg-gray-50">
+                      <FolderOpen className="w-6 h-6 text-[#024ad8] mx-auto mb-2" />
+                      <p className="text-sm font-medium text-gray-900">1. Crear Colección</p>
+                      <p className="text-xs text-gray-500 mt-1">Organiza tus documentos</p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-gray-50">
+                      <Upload className="w-6 h-6 text-[#024ad8] mx-auto mb-2" />
+                      <p className="text-sm font-medium text-gray-900">2. Agregar Docs</p>
+                      <p className="text-xs text-gray-500 mt-1">Sube archivos o pega texto</p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-gray-50">
+                      <MessageSquare className="w-6 h-6 text-[#024ad8] mx-auto mb-2" />
+                      <p className="text-sm font-medium text-gray-900">3. Chatea</p>
+                      <p className="text-xs text-gray-500 mt-1">Pregunta sobre tus docs</p>
+                    </div>
+                  </div>
+                  {!ollamaConnected && (
+                    <div className="mt-6 p-4 rounded-xl bg-red-50 border border-red-100">
+                      <div className="flex items-center gap-2 text-red-600 justify-center">
+                        <WifiOff className="w-4 h-4" />
+                        <span className="text-sm font-medium">Ollama no está conectado</span>
+                      </div>
+                      <p className="text-xs text-red-400 mt-1">
+                        Asegúrate de que Ollama esté ejecutándose en localhost:11434
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right Panel - Documents or Settings */}
+          {(documentsPanelOpen || settingsPanelOpen) && selectedCollectionId && (
+            <div className="w-[360px] border-l border-gray-100 flex flex-col bg-white min-h-0">
+              {documentsPanelOpen && (
+                <>
+                  <div className="p-4 border-b border-gray-100 flex-shrink-0">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-gray-900">Documentos</h3>
+                      <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => setDocumentsPanelOpen(false)}>
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="p-4 border-b border-gray-100 space-y-3 flex-shrink-0">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleUploadDocument}
+                      accept=".txt,.md,.csv,.json,.html,.xml,.log,.py,.js,.ts,.java,.c,.cpp,.rs,.go,.sh,.yaml,.yml,.toml,.cfg,.ini"
+                      className="hidden"
+                    />
+                    <Button
+                      variant="outline"
+                      className="w-full border-dashed"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadingDoc}
+                    >
+                      {uploadingDoc ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <Upload className="w-4 h-4 mr-2" />
+                      )}
+                      {uploadingDoc ? 'Subiendo...' : 'Subir Archivo'}
+                    </Button>
+                    <Dialog open={showPasteDialog} onOpenChange={setShowPasteDialog}>
+                      <Button
+                        variant="outline"
+                        className="w-full border-dashed"
+                        onClick={() => setShowPasteDialog(true)}
+                      >
+                        <FileText className="w-4 h-4 mr-2" />
+                        Pegar Texto
+                      </Button>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>Pegar Texto como Documento</DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-4 py-4">
+                          <div className="space-y-2">
+                            <Label>Nombre del documento</Label>
+                            <Input
+                              placeholder="Nombre opcional"
+                              value={pasteName}
+                              onChange={(e) => setPasteName(e.target.value)}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Contenido</Label>
+                            <Textarea
+                              placeholder="Pega tu texto aquí..."
+                              value={pasteText}
+                              onChange={(e) => setPasteText(e.target.value)}
+                              className="min-h-[200px]"
+                            />
+                          </div>
+                        </div>
+                        <DialogFooter>
+                          <DialogClose asChild>
+                            <Button variant="outline">Cancelar</Button>
+                          </DialogClose>
+                          <Button
+                            className="bg-[#024ad8] hover:bg-[#0139a3] text-white"
+                            onClick={handlePasteDocument}
+                            disabled={!pasteText.trim() || uploadingDoc}
+                          >
+                            {uploadingDoc ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                            Agregar
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                    {documents.length > 0 && documents.some(d => !d.embedded) && (
+                      <Button
+                        className="w-full bg-[#024ad8] hover:bg-[#0139a3] text-white"
+                        onClick={handleGenerateEmbeddings}
+                        disabled={embeddingDocs}
+                      >
+                        {embeddingDocs ? (
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-4 h-4 mr-2" />
+                        )}
+                        {embeddingDocs ? 'Generando...' : 'Generar Embeddings'}
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                    <div className="p-4 space-y-2">
+                      {documents.length === 0 ? (
+                        <div className="text-center py-8 text-gray-400">
+                          <File className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                          <p className="text-sm">Sin documentos</p>
+                          <p className="text-xs mt-1">Sube archivos o pega texto</p>
+                        </div>
+                      ) : (
+                        documents.map((doc) => (
+                          <div
+                            key={doc.id}
+                            className="flex items-center gap-3 p-3 rounded-lg border border-gray-100 hover:border-gray-200 transition-colors"
+                          >
+                            <File className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">{doc.name}</p>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                <span className="text-xs text-gray-400">{doc.chunkCount} chunks</span>
+                                {doc.embedded ? (
+                                  <Badge className="h-5 text-xs bg-green-100 text-green-700 hover:bg-green-100">
+                                    <Check className="w-3 h-3 mr-0.5" />
+                                    Embed
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="outline" className="h-5 text-xs text-gray-400">
+                                    Sin embed
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="w-7 h-7 text-gray-400 hover:text-red-500"
+                              onClick={() => handleDeleteDocument(doc.id)}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {settingsPanelOpen && selectedCollection && (
+                <>
+                  <div className="p-4 border-b border-gray-100 flex-shrink-0">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-gray-900">Configuración</h3>
+                      <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => setSettingsPanelOpen(false)}>
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-6">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Modelo de Chat</Label>
+                      <p className="text-xs text-gray-500">Modelo utilizado para generar respuestas</p>
+                      <Select
+                        value={selectedCollection.chatModel}
+                        onValueChange={(v) => handleUpdateModel('chatModel', v)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {chatModels.map((model) => (
+                            <SelectItem key={model.name} value={model.name}>
+                              {model.name}
+                              <span className="text-xs text-gray-400 ml-2">
+                                {model.details?.parameter_size}
+                              </span>
+                            </SelectItem>
+                          ))}
+                          {chatModels.length === 0 && (
+                            <SelectItem value={selectedCollection.chatModel}>
+                              {selectedCollection.chatModel}
+                            </SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Modelo de Embeddings</Label>
+                      <p className="text-xs text-gray-500">Modelo utilizado para generar embeddings de documentos</p>
+                      <Select
+                        value={selectedCollection.embedModel}
+                        onValueChange={(v) => handleUpdateModel('embedModel', v)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {embeddingModels.map((model) => (
+                            <SelectItem key={model.name} value={model.name}>
+                              {model.name}
+                              <span className="text-xs text-gray-400 ml-2">
+                                {model.details?.parameter_size}
+                              </span>
+                            </SelectItem>
+                          ))}
+                          {embeddingModels.length === 0 && (
+                            <SelectItem value={selectedCollection.embedModel}>
+                              {selectedCollection.embedModel}
+                            </SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-3">
+                      <Label className="text-sm font-medium">Búsqueda Web</Label>
+                      <p className="text-xs text-gray-500">Buscar en internet para complementar las respuestas</p>
+                      
+                      {/* Toggle web search for this collection */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={async () => {
+                            await fetch(`/api/collections/${selectedCollectionId}`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ webSearch: !selectedCollection.webSearch }),
+                            });
+                            await fetchCollections();
+                          }}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            selectedCollection.webSearch ? 'bg-[#024ad8]' : 'bg-gray-200'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              selectedCollection.webSearch ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                        <span className="text-sm text-gray-600">
+                          {selectedCollection.webSearch ? 'Activado' : 'Desactivado'}
+                        </span>
+                      </div>
+
+                      {/* Search provider selection */}
+                      <div className="space-y-2 mt-2">
+                        <Label className="text-xs text-gray-600">Proveedor de búsqueda</Label>
+                        <Select
+                          value={webSearchProvider}
+                          onValueChange={async (v: 'zai' | 'duckduckgo' | 'searxng') => {
+                            setWebSearchProvider(v);
+                            setSearchTestResult(null);
+                            await fetch('/api/settings/web-search', {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ provider: v, searxngUrl }),
+                            });
+                          }}
+                        >
+                          <SelectTrigger className="h-9 text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="duckduckgo">
+                              <div className="flex items-center gap-2">
+                                <Globe className="w-3.5 h-3.5" />
+                                <span>DuckDuckGo</span>
+                                <span className="text-xs text-gray-400 ml-1">(Sin config)</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="searxng">
+                              <div className="flex items-center gap-2">
+                                <Globe className="w-3.5 h-3.5" />
+                                <span>SearXNG</span>
+                                <span className="text-xs text-gray-400 ml-1">(Self-hosted)</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="zai">
+                              <div className="flex items-center gap-2">
+                                <Globe className="w-3.5 h-3.5" />
+                                <span>Z-AI SDK</span>
+                                <span className="text-xs text-gray-400 ml-1">(Sandbox)</span>
+                              </div>
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* Provider description */}
+                      {webSearchProvider === 'duckduckgo' && (
+                        <div className="p-2.5 rounded-lg bg-green-50 border border-green-100">
+                          <p className="text-xs text-green-700">
+                            <strong>DuckDuckGo</strong> funciona en cualquier entorno sin configuración adicional. Ideal para uso local en Windows.
+                          </p>
+                        </div>
+                      )}
+                      {webSearchProvider === 'searxng' && (
+                        <>
+                          <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-100">
+                            <p className="text-xs text-amber-700">
+                              <strong>SearXNG</strong> requiere una instancia local. Ejecuta con Docker: <code className="bg-amber-100 px-1 rounded text-[10px]">docker run -p 8080:8080 searxng/searxng</code>
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-gray-600">URL de SearXNG</Label>
+                            <Input
+                              value={searxngUrl}
+                              onChange={(e) => setSearxngUrl(e.target.value)}
+                              onBlur={async () => {
+                                await fetch('/api/settings/web-search', {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ provider: webSearchProvider, searxngUrl }),
+                                });
+                              }}
+                              placeholder="http://localhost:8080"
+                              className="h-8 text-sm"
+                            />
+                          </div>
+                        </>
+                      )}
+                      {webSearchProvider === 'zai' && (
+                        <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-100">
+                          <p className="text-xs text-blue-700">
+                            <strong>Z-AI SDK</strong> solo funciona en el entorno sandbox de Z-AI. No funcionará en una instalación local de Windows.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Test connection button */}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full text-xs"
+                        disabled={testingSearch}
+                        onClick={async () => {
+                          setTestingSearch(true);
+                          setSearchTestResult(null);
+                          try {
+                            const res = await fetch('/api/settings/web-search', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ provider: webSearchProvider, searxngUrl }),
+                            });
+                            const data = await res.json();
+                            setSearchTestResult(data);
+                          } catch {
+                            setSearchTestResult({ ok: false, error: 'Error de conexión' });
+                          } finally {
+                            setTestingSearch(false);
+                          }
+                        }}
+                      >
+                        {testingSearch ? (
+                          <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                          <Globe className="w-3 h-3 mr-1.5" />
+                        )}
+                        {testingSearch ? 'Probando...' : 'Probar conexión'}
+                      </Button>
+                      {searchTestResult && (
+                        <div className={`p-2 rounded-lg text-xs ${
+                          searchTestResult.ok
+                            ? 'bg-green-50 text-green-700 border border-green-100'
+                            : 'bg-red-50 text-red-700 border border-red-100'
+                        }`}>
+                          {searchTestResult.ok ? '✓ Conexión exitosa' : `✗ Error: ${searchTestResult.error || 'No se pudo conectar'}`}
+                        </div>
+                      )}
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-3">
+                      <Label className="text-sm font-medium">Activación por Voz</Label>
+                      <p className="text-xs text-gray-500">Usa tu voz para enviar mensajes al asistente</p>
+
+                      {!voiceSupported && (
+                        <p className="text-xs text-amber-600">Tu navegador no soporta reconocimiento de voz. Usa Chrome o Edge.</p>
+                      )}
+
+                      <div className="space-y-2">
+                        <Label className="text-xs">Idioma de reconocimiento</Label>
+                        <Select
+                          value={voiceLanguage}
+                          onValueChange={async (v) => {
+                            setVoiceLanguage(v);
+                            await fetch('/api/settings/voice', {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ keyword: voiceKeyword, pauseDuration: voicePauseDuration, language: v, enabled: voiceEnabled }),
+                            });
+                          }}
+                        >
+                          <SelectTrigger className="text-sm h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="es-ES">
+                              <span className="flex items-center gap-2">🇪🇸 Español (España)</span>
+                            </SelectItem>
+                            <SelectItem value="es-MX">
+                              <span className="flex items-center gap-2">🇲🇽 Español (México)</span>
+                            </SelectItem>
+                            <SelectItem value="es-AR">
+                              <span className="flex items-center gap-2">🇦🇷 Español (Argentina)</span>
+                            </SelectItem>
+                            <SelectItem value="es-CO">
+                              <span className="flex items-center gap-2">🇨🇴 Español (Colombia)</span>
+                            </SelectItem>
+                            <SelectItem value="es-CL">
+                              <span className="flex items-center gap-2">🇨🇱 Español (Chile)</span>
+                            </SelectItem>
+                            <SelectItem value="es-PE">
+                              <span className="flex items-center gap-2">🇵🇪 Español (Perú)</span>
+                            </SelectItem>
+                            <SelectItem value="en-US">
+                              <span className="flex items-center gap-2">🇺🇸 English (US)</span>
+                            </SelectItem>
+                            <SelectItem value="en-GB">
+                              <span className="flex items-center gap-2">🇬🇧 English (UK)</span>
+                            </SelectItem>
+                            <SelectItem value="fr-FR">
+                              <span className="flex items-center gap-2">🇫🇷 Français</span>
+                            </SelectItem>
+                            <SelectItem value="de-DE">
+                              <span className="flex items-center gap-2">🇩🇪 Deutsch</span>
+                            </SelectItem>
+                            <SelectItem value="pt-BR">
+                              <span className="flex items-center gap-2">🇧🇷 Português (Brasil)</span>
+                            </SelectItem>
+                            <SelectItem value="it-IT">
+                              <span className="flex items-center gap-2">🇮🇹 Italiano</span>
+                            </SelectItem>
+                            <SelectItem value="ja-JP">
+                              <span className="flex items-center gap-2">🇯🇵 日本語</span>
+                            </SelectItem>
+                            <SelectItem value="zh-CN">
+                              <span className="flex items-center gap-2">🇨🇳 中文 (简体)</span>
+                            </SelectItem>
+                            <SelectItem value="ko-KR">
+                              <span className="flex items-center gap-2">🇰🇷 한국어</span>
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-[10px] text-gray-400">Selecciona el idioma para mejorar la precisión del reconocimiento</p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs">Palabra clave</Label>
+                        <Input
+                          value={voiceKeyword}
+                          onChange={(e) => setVoiceKeyword(e.target.value)}
+                          onBlur={async () => {
+                            await fetch('/api/settings/voice', {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ keyword: voiceKeyword, pauseDuration: voicePauseDuration, language: voiceLanguage, enabled: voiceEnabled }),
+                            });
+                          }}
+                          placeholder="asistente HP"
+                          className="text-sm"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs">Pausa antes de enviar (segundos)</Label>
+                        <Input
+                          type="number"
+                          min={0.5}
+                          max={5}
+                          step={0.5}
+                          value={voicePauseDuration}
+                          onChange={(e) => setVoicePauseDuration(parseFloat(e.target.value) || 1.5)}
+                          onBlur={async () => {
+                            await fetch('/api/settings/voice', {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ keyword: voiceKeyword, pauseDuration: voicePauseDuration, language: voiceLanguage, enabled: voiceEnabled }),
+                            });
+                          }}
+                          className="text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Conexión Ollama</Label>
+                      <div className="flex items-center gap-2 text-sm">
+                        {ollamaConnected ? (
+                          <Badge className="bg-green-100 text-green-700 hover:bg-green-100">
+                            <Wifi className="w-3 h-3 mr-1" />
+                            Conectado
+                          </Badge>
+                        ) : (
+                          <Badge variant="destructive">
+                            <WifiOff className="w-3 h-3 mr-1" />
+                            Desconectado
+                          </Badge>
+                        )}
+                        <Button variant="ghost" size="sm" onClick={fetchModels} className="text-xs">
+                          Reconectar
+                        </Button>
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Modelos de Chat Disponibles</Label>
+                      <div className="space-y-1">
+                        {chatModels.map((model) => (
+                          <div key={model.name} className="text-xs text-gray-600 flex items-center gap-2 p-2 rounded bg-gray-50">
+                            <MessageSquare className="w-3 h-3 text-[#024ad8]" />
+                            <span className="font-medium">{model.name}</span>
+                            <span className="text-gray-400">{model.details?.parameter_size}</span>
+                          </div>
+                        ))}
+                        {chatModels.length === 0 && (
+                          <p className="text-xs text-gray-400">No se encontraron modelos</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Modelos de Embeddings Disponibles</Label>
+                      <div className="space-y-1">
+                        {embeddingModels.map((model) => (
+                          <div key={model.name} className="text-xs text-gray-600 flex items-center gap-2 p-2 rounded bg-gray-50">
+                            <Database className="w-3 h-3 text-[#024ad8]" />
+                            <span className="font-medium">{model.name}</span>
+                            <span className="text-gray-400">{model.details?.parameter_size}</span>
+                          </div>
+                        ))}
+                        {embeddingModels.length === 0 && (
+                          <p className="text-xs text-gray-400">No se encontraron modelos de embeddings</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
