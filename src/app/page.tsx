@@ -198,6 +198,9 @@ export default function Home() {
 
   const selectedCollection = collections.find(c => c.id === selectedCollectionId);
 
+  // Chat is available when: local provider + Ollama connected, OR online provider + API key saved
+  const chatAvailable = llmProvider === 'online' ? hasSavedApiKey : ollamaConnected;
+
   // Fetch initial data
   const fetchCollections = useCallback(async () => {
     try {
@@ -1351,14 +1354,14 @@ export default function Home() {
                         <Textarea
                           ref={chatInputRef}
                           placeholder={
-                            ollamaConnected
+                            chatAvailable
                               ? 'Escribe tu mensaje...'
-                              : 'Ollama no está conectado...'
+                              : llmProvider === 'online' ? 'Configura tu API Key de OpenAI...' : 'Ollama no está conectado...'
                           }
                           value={chatInput}
                           onChange={(e) => setChatInput(e.target.value)}
                           onKeyDown={handleChatKeyDown}
-                          disabled={isChatLoading || !ollamaConnected}
+                          disabled={isChatLoading || !chatAvailable}
                           className="min-h-[44px] max-h-32 resize-none pr-10 rounded-xl border-gray-100 focus:border-[#024ad8] focus:ring-[#024ad8]/20"
                           rows={1}
                         />
@@ -1400,7 +1403,7 @@ export default function Home() {
                       ) : (
                         <Button
                           onClick={handleSendMessage}
-                          disabled={!chatInput.trim() || !ollamaConnected}
+                          disabled={!chatInput.trim() || !chatAvailable}
                           className="bg-[#024ad8] hover:bg-[#0139a3] text-white h-11 w-11 rounded-xl"
                           size="icon"
                         >
@@ -1474,14 +1477,18 @@ export default function Home() {
                       <p className="text-xs text-gray-500 mt-1">Pregunta sobre tus docs</p>
                     </div>
                   </div>
-                  {!ollamaConnected && (
+                  {!chatAvailable && (
                     <div className="mt-6 p-4 rounded-xl bg-red-50 border border-red-100">
                       <div className="flex items-center gap-2 text-red-600 justify-center">
                         <WifiOff className="w-4 h-4" />
-                        <span className="text-sm font-medium">Ollama no está conectado</span>
+                        <span className="text-sm font-medium">
+                          {llmProvider === 'online' ? 'API Key no configurada' : 'Ollama no está conectado'}
+                        </span>
                       </div>
                       <p className="text-xs text-red-400 mt-1">
-                        Asegúrate de que Ollama esté ejecutándose en localhost:11434
+                        {llmProvider === 'online'
+                          ? 'Configura tu API Key de OpenAI en la configuración del proveedor'
+                          : 'Asegúrate de que Ollama esté ejecutándose en localhost:11434'}
                       </p>
                     </div>
                   )}
