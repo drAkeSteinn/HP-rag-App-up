@@ -4,7 +4,7 @@ import { db } from '@/lib/db';
 const SETTINGS_KEY = 'voice_config';
 
 const DEFAULT_VOICE_CONFIG = {
-  keyword: 'asistente HP',
+  keyword: 'asistente',
   pauseDuration: 1.5,
   language: 'es-ES',
   enabled: false,

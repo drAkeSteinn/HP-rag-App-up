@@ -61,9 +61,17 @@ export async function DELETE(
   try {
     const { id } = await params;
     
-    await db.collection.delete({
-      where: { id },
-    });
+    // Explicitly delete in correct order to avoid cascade issues with SQLite:
+    // 1. Embeddings (deepest child)
+    // 2. Chunks
+    // 3. Documents (which also cascades to Chunks → Embeddings)
+    // 4. ChatMessages
+    // 5. Collection itself
+    await db.embedding.deleteMany({ where: { collectionId: id } });
+    await db.chatMessage.deleteMany({ where: { collectionId: id } });
+    await db.chunk.deleteMany({ where: { collectionId: id } });
+    await db.document.deleteMany({ where: { collectionId: id } });
+    await db.collection.delete({ where: { id } });
     
     return NextResponse.json({ success: true });
   } catch (error) {
